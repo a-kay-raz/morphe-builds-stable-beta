@@ -17,42 +17,38 @@ env:
   MICROG_REPO: MorpheApp/MicroG-RE
   APKMD_PACKAGE: apkmirror-downloader
 
+  # ARM64 only
   ARCH: arm64-v8a
 
 
 jobs:
 
   # =========================================================
-  # DETECT MORPHE DEV + APP VERSIONS
+  # 1. DETECT LATEST MORPHE DEV + SUPPORTED APP VERSIONS
   # =========================================================
   detect:
     name: Detect Morphe DEV + Versions
     runs-on: ubuntu-latest
 
     outputs:
-      patch_tag: ${{ steps.info.outputs.patch_tag }}
-      desktop_tag: ${{ steps.info.outputs.desktop_tag }}
-      microg_tag: ${{ steps.info.outputs.microg_tag }}
+      patch_tag: ${{ steps.detect.outputs.patch_tag }}
+      desktop_tag: ${{ steps.detect.outputs.desktop_tag }}
+      microg_tag: ${{ steps.detect.outputs.microg_tag }}
       youtube_versions: ${{ steps.versions.outputs.youtube_versions }}
       reddit_version: ${{ steps.versions.outputs.reddit_version }}
 
     steps:
 
-      - name: Setup Java 21
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-
-
       # -------------------------------------------------------
-      # Latest Morphe DEV patch release
+      # Detect latest Morphe DEV patches + Desktop DEV
       # -------------------------------------------------------
       - name: Detect latest Morphe DEV
-        id: info
+        id: detect
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Detecting latest Morphe DEV patch release..."
 
           PATCH_JSON="$(
             curl -fsSL \
@@ -78,9 +74,16 @@ jobs:
             exit 1
           fi
 
-          DESKTOP_TAG="$(
+
+          echo "Detecting latest Morphe Desktop DEV..."
+
+          DESKTOP_JSON="$(
             curl -fsSL \
-              "https://api.github.com/repos/${MORPHE_REPO}/releases?per_page=100" |
+              "https://api.github.com/repos/${MORPHE_REPO}/releases?per_page=100"
+          )"
+
+          DESKTOP_TAG="$(
+            echo "$DESKTOP_JSON" |
             jq -r '
               [
                 .[]
@@ -93,25 +96,40 @@ jobs:
             '
           )"
 
+          if [ -z "$DESKTOP_TAG" ] || [ "$DESKTOP_TAG" = "null" ]; then
+            echo "ERROR: No Morphe Desktop DEV release found."
+            exit 1
+          fi
+
+
+          echo "Detecting latest MicroG-RE..."
+
           MICROG_TAG="$(
             curl -fsSL \
               "https://api.github.com/repos/${MICROG_REPO}/releases/latest" |
             jq -r '.tag_name'
           )"
 
+
           echo "patch_tag=$PATCH_TAG" >> "$GITHUB_OUTPUT"
           echo "desktop_tag=$DESKTOP_TAG" >> "$GITHUB_OUTPUT"
           echo "microg_tag=$MICROG_TAG" >> "$GITHUB_OUTPUT"
 
-          echo "======================================"
-          echo "Morphe DEV    : $PATCH_TAG"
-          echo "Morphe Desktop : $DESKTOP_TAG"
-          echo "MicroG-RE      : $MICROG_TAG"
-          echo "======================================"
+
+          echo
+          echo "=========================================="
+          echo "Morphe DEV patches : $PATCH_TAG"
+          echo "Morphe Desktop DEV  : $DESKTOP_TAG"
+          echo "MicroG-RE           : $MICROG_TAG"
+          echo "=========================================="
 
 
       # -------------------------------------------------------
-      # Download latest Morphe Desktop DEV
+      # Download Morphe Desktop DEV
+      #
+      # IMPORTANT:
+      # Correct GitHub API endpoint:
+      # /releases/tags/<tag>
       # -------------------------------------------------------
       - name: Download Morphe Desktop DEV
         shell: bash
@@ -120,9 +138,18 @@ jobs:
 
           mkdir -p tools
 
-          JAR_URL="$(
+          DESKTOP_TAG="${{ steps.detect.outputs.desktop_tag }}"
+
+          echo "Downloading Morphe Desktop:"
+          echo "$DESKTOP_TAG"
+
+          RELEASE_JSON="$(
             curl -fsSL \
-              "https://api.github.com/repos/${MORPHE_REPO}/releases/${{ steps.info.outputs.desktop_tag }}" |
+              "https://api.github.com/repos/${MORPHE_REPO}/releases/tags/${DESKTOP_TAG}"
+          )"
+
+          JAR_URL="$(
+            echo "$RELEASE_JSON" |
             jq -r '
               .assets[]
               | select(.name | endswith("-all.jar"))
@@ -132,42 +159,67 @@ jobs:
           )"
 
           if [ -z "$JAR_URL" ] || [ "$JAR_URL" = "null" ]; then
-            echo "ERROR: Morphe Desktop DEV JAR not found."
+            echo "ERROR: Morphe Desktop DEV -all.jar not found."
+            echo
+            echo "Available assets:"
+            echo "$RELEASE_JSON" |
+              jq -r '.assets[].name'
             exit 1
           fi
+
+          echo "JAR:"
+          echo "$JAR_URL"
 
           curl -fL "$JAR_URL" \
             -o tools/morphe-desktop.jar
 
+          test -s tools/morphe-desktop.jar
+
+          echo
+          echo "Morphe Desktop downloaded:"
+          ls -lh tools/morphe-desktop.jar
+
+          echo
           java -jar tools/morphe-desktop.jar --version
 
 
       # -------------------------------------------------------
-      # Get YouTube STABLE + EXPERIMENTAL versions
-      # directly from the DEV patch bundle
+      # Detect YouTube stable + experimental
+      # Detect Reddit latest experimental
+      # directly from Morphe DEV
       # -------------------------------------------------------
-      - name: Detect YouTube versions
+      - name: Detect supported versions
         id: versions
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Detecting YouTube versions from Morphe DEV..."
+          PATCH_SOURCE="https://github.com/${PATCHES_REPO}"
+
+
+          # ===================================================
+          # YOUTUBE
+          # Stable + Experimental
+          # ===================================================
+
+          echo
+          echo "=========================================="
+          echo "Detecting YouTube versions..."
+          echo "=========================================="
 
           YT_OUTPUT="$(
             java -jar tools/morphe-desktop.jar list-versions \
-              --patches "https://github.com/${PATCHES_REPO}" \
+              --patches "$PATCH_SOURCE" \
               --prerelease \
               --include-experimental \
               --filter-package-names com.google.android.youtube
           )"
 
-          echo "========== MORPHE YOUTUBE =========="
           echo "$YT_OUTPUT"
-          echo "===================================="
+
 
           YOUTUBE_VERSIONS="$(
-            echo "$YT_OUTPUT" |
+            printf '%s\n' "$YT_OUTPUT" |
             grep -oE '[0-9]+\.[0-9]+\.[0-9]+' |
             sort -Vu |
             jq -R -s -c '
@@ -177,64 +229,85 @@ jobs:
             '
           )"
 
+
           if [ "$YOUTUBE_VERSIONS" = "[]" ]; then
-            echo "ERROR: No YouTube versions detected."
+            echo "ERROR: No compatible YouTube versions detected."
             exit 1
           fi
+
 
           echo
           echo "YouTube versions:"
           echo "$YOUTUBE_VERSIONS" | jq -r '.[]'
 
-          echo "youtube_versions=$YOUTUBE_VERSIONS" >> "$GITHUB_OUTPUT"
+
+          echo "youtube_versions=$YOUTUBE_VERSIONS" \
+            >> "$GITHUB_OUTPUT"
 
 
-          # ---------------------------------------------------
-          # Reddit:
-          # latest version from experimental-capable DEV list
-          # ---------------------------------------------------
+          # ===================================================
+          # REDDIT
+          # Latest experimental / not recommended
+          # ===================================================
+
           echo
+          echo "=========================================="
           echo "Detecting Reddit experimental versions..."
+          echo "=========================================="
 
           REDDIT_OUTPUT="$(
             java -jar tools/morphe-desktop.jar list-versions \
-              --patches "https://github.com/${PATCHES_REPO}" \
+              --patches "$PATCH_SOURCE" \
               --prerelease \
               --include-experimental \
               --filter-package-names com.reddit.frontpage
           )"
 
-          echo "========== MORPHE REDDIT =========="
           echo "$REDDIT_OUTPUT"
-          echo "==================================="
+
 
           REDDIT_VERSION="$(
-            echo "$REDDIT_OUTPUT" |
+            printf '%s\n' "$REDDIT_OUTPUT" |
             grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' |
             sort -V |
             tail -n 1
           )"
 
+
           if [ -z "$REDDIT_VERSION" ]; then
-            echo "ERROR: No Reddit version detected."
+            echo "ERROR: No Reddit experimental version detected."
             exit 1
           fi
 
+
           echo
-          echo "Latest Reddit version:"
+          echo "Latest Reddit experimental:"
           echo "$REDDIT_VERSION"
 
-          echo "reddit_version=$REDDIT_VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "reddit_version=$REDDIT_VERSION" \
+            >> "$GITHUB_OUTPUT"
+
+
+          echo
+          echo "=========================================="
+          echo "FINAL VERSION SELECTION"
+          echo "=========================================="
+          echo "YouTube:"
+          echo "$YOUTUBE_VERSIONS" | jq -r '.[]'
+          echo
+          echo "Reddit:"
+          echo "$REDDIT_VERSION"
+          echo "=========================================="
 
 
   # =========================================================
-  # YOUTUBE
+  # 2. YOUTUBE
   # Stable + Experimental
   # =========================================================
   youtube:
     name: YouTube - ${{ matrix.version }}
     needs: detect
-
     runs-on: ubuntu-latest
 
     strategy:
@@ -246,13 +319,13 @@ jobs:
     steps:
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
 
       - name: Setup Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
@@ -274,7 +347,7 @@ jobs:
       # -------------------------------------------------------
       # Download YouTube ARM64
       # -------------------------------------------------------
-      - name: Download YouTube ${{ matrix.version }}
+      - name: Download YouTube
         shell: bash
         run: |
           set -euo pipefail
@@ -302,9 +375,14 @@ jobs:
           }
           EOF
 
+          echo "Downloading YouTube:"
+          echo "${{ matrix.version }}"
+          echo "Architecture: arm64-v8a"
+
           apkmd apps.json
 
-          echo "Downloaded:"
+          echo
+          echo "Downloaded files:"
           find downloads -type f -print
 
 
@@ -321,15 +399,18 @@ jobs:
           )"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: YouTube APK not found."
+            echo "ERROR: YouTube APK/APKM not found."
             exit 1
           fi
+
+          echo "Input:"
+          echo "$APK"
 
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
 
       # -------------------------------------------------------
-      # Patch using MORPHE DEV
+      # Patch with latest Morphe DEV
       # -------------------------------------------------------
       - name: Patch YouTube with Morphe DEV
         shell: bash
@@ -356,14 +437,17 @@ jobs:
 
           APK="output/YouTube-${{ matrix.version }}-Morphe-DEV-ARM64.apk"
 
-          test -s "$APK"
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: Patched YouTube APK was not created."
+            exit 1
+          fi
 
           echo "SUCCESS:"
           ls -lh "$APK"
 
 
-      - name: Upload YouTube
-        uses: actions/upload-artifact@v6
+      - name: Upload YouTube artifact
+        uses: actions/upload-artifact@v4
         with:
           name: YouTube-${{ matrix.version }}-Morphe-DEV-ARM64
           path: |
@@ -373,30 +457,32 @@ jobs:
 
 
   # =========================================================
-  # REDDIT
+  # 3. REDDIT
   # Latest Experimental / Not Recommended
   # =========================================================
   reddit:
     name: Reddit - Latest Experimental
     needs: detect
-
     runs-on: ubuntu-latest
 
     steps:
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
 
       - name: Setup Java 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
 
+      # -------------------------------------------------------
+      # APKMirror Downloader
+      # -------------------------------------------------------
       - name: Install APKMirror Downloader
         shell: bash
         run: |
@@ -408,8 +494,7 @@ jobs:
 
 
       # -------------------------------------------------------
-      # Reddit latest experimental
-      # IMPORTANT: redditinc/reddit
+      # Download latest Reddit experimental ARM64
       # -------------------------------------------------------
       - name: Download Reddit Experimental
         shell: bash
@@ -419,6 +504,13 @@ jobs:
           mkdir -p downloads
 
           REDDIT_VERSION="${{ needs.detect.outputs.reddit_version }}"
+
+          echo "=========================================="
+          echo "Reddit Experimental"
+          echo "Version: $REDDIT_VERSION"
+          echo "Architecture: arm64-v8a"
+          echo "=========================================="
+
 
           cat > apps.json <<EOF
           {
@@ -441,11 +533,10 @@ jobs:
           }
           EOF
 
-          echo "Downloading Reddit ${REDDIT_VERSION}..."
-
           apkmd apps.json
 
-          echo "Downloaded:"
+          echo
+          echo "Downloaded Reddit files:"
           find downloads -type f -print
 
 
@@ -466,11 +557,14 @@ jobs:
             exit 1
           fi
 
+          echo "Input:"
+          echo "$APK"
+
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
 
       # -------------------------------------------------------
-      # Patch Reddit using MORPHE DEV
+      # Patch Reddit with latest Morphe DEV
       # -------------------------------------------------------
       - name: Patch Reddit with Morphe DEV
         shell: bash
@@ -499,14 +593,17 @@ jobs:
 
           APK="output/Reddit-${{ needs.detect.outputs.reddit_version }}-Morphe-DEV-Experimental-ARM64.apk"
 
-          test -s "$APK"
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: Patched Reddit APK was not created."
+            exit 1
+          fi
 
           echo "SUCCESS:"
           ls -lh "$APK"
 
 
-      - name: Upload Reddit
-        uses: actions/upload-artifact@v6
+      - name: Upload Reddit artifact
+        uses: actions/upload-artifact@v4
         with:
           name: Reddit-${{ needs.detect.outputs.reddit_version }}-Morphe-DEV-Experimental-ARM64
           path: |
@@ -516,12 +613,11 @@ jobs:
 
 
   # =========================================================
-  # MICROG-RE
+  # 4. MICROG-RE
   # =========================================================
   microg:
     name: Latest MicroG-RE ARM64
     needs: detect
-
     runs-on: ubuntu-latest
 
     steps:
@@ -549,14 +645,17 @@ jobs:
             exit 1
           fi
 
+          echo "Downloading:"
+          echo "$URL"
+
           curl -fL "$URL" \
             -o "output/$(basename "$URL")"
 
           ls -lh output/
 
 
-      - name: Upload MicroG
-        uses: actions/upload-artifact@v6
+      - name: Upload MicroG-RE
+        uses: actions/upload-artifact@v4
         with:
           name: MicroG-RE-ARM64
           path: output/*.apk
@@ -564,7 +663,7 @@ jobs:
 
 
   # =========================================================
-  # COMBINED RELEASE
+  # 5. COMBINED RELEASE
   # =========================================================
   release:
     name: Create Combined Release
@@ -580,7 +679,7 @@ jobs:
     steps:
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
@@ -589,9 +688,9 @@ jobs:
       - name: Show release files
         shell: bash
         run: |
-          echo "======================================"
-          echo "RELEASE FILES"
-          echo "======================================"
+          echo "=========================================="
+          echo "FINAL RELEASE FILES"
+          echo "=========================================="
 
           find release-assets \
             -type f \
@@ -605,52 +704,58 @@ jobs:
           cat > release-notes.md <<EOF
           # Morphe DEV ARM64 Bundle
 
-          Morphe DEV patches:
+          ## Morphe
+
+          DEV patches:
           ${{ needs.detect.outputs.patch_tag }}
 
-          Morphe Desktop:
+          Morphe Desktop DEV:
           ${{ needs.detect.outputs.desktop_tag }}
 
           MicroG-RE:
           ${{ needs.detect.outputs.microg_tag }}
 
-          ## Included
+          ## YouTube
 
-          ### YouTube
-          - Stable compatible versions
-          - Experimental compatible versions
-          - ARM64 only
-          - Morphe DEV patches
-
-          ### Reddit
-          - Latest experimental / not-recommended version
+          Includes:
+          - Stable-compatible versions
+          - Experimental-compatible versions
           - Morphe DEV patches
           - ARM64 only
 
-          ### MicroG-RE
-          - Latest stable ARM64 release
+          ## Reddit
+
+          Includes:
+          - Latest experimental / not-recommended compatible version
+          - Morphe DEV patches
+          - ARM64 only
 
           ## Architecture
 
           arm64-v8a
 
-          ## Schedule
+          ## Automatic build
 
-          Automatic build every 24 hours.
+          This workflow runs once every 24 hours.
 
-          Manual build is also available.
+          Manual:
+          Run workflow is also available.
 
-          ## Official Morphe patches
+          ## Patch source
 
           https://github.com/${PATCHES_REPO}
+
+          ## Morphe documentation
+
+          https://github.com/${MORPHE_REPO}
           EOF
 
 
-      - name: Create GitHub Release
+      - name: Create Combined GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "morphe-dev-${{ needs.detect.outputs.patch_tag }}"
-          name: "Morphe DEV ${{ needs.detect.outputs.patch_tag }} - ARM64"
+          name: "Morphe DEV ${{ needs.detect.outputs.patch_tag }} - ARM64 Bundle"
           body_path: release-notes.md
           prerelease: true
           generate_release_notes: false
