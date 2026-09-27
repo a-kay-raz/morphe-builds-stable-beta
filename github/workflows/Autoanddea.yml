@@ -1,0 +1,404 @@
+name: Auto Morphe Beta → YouTube + Reddit → ARM64
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Daily 10:00 AM IST
+    - cron: "30 4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      MORPHE: "https://github.com/MorpheApp/morphe-patches"
+      APKMD: "tanishqmanuja/apkmirror-downloader"
+
+    steps:
+
+      # ==============================
+      # 1. Checkout + Java
+      # ==============================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # ==============================
+      # 2. Download tools + microG
+      # ==============================
+
+      - name: Download tools
+        shell: bash
+        run: |
+          set -e
+          mkdir -p tools output
+
+          # APKMirror downloader
+          APKMD_URL="$(
+            curl -fsSL \
+              "https://api.github.com/repos/${APKMD}/releases/latest" |
+            jq -r '
+              .assets[]
+              | select(.name == "apkmd")
+              | .browser_download_url
+            ' |
+            head -n 1
+          )"
+
+          test -n "$APKMD_URL"
+
+          curl -fL "$APKMD_URL" -o tools/apkmd
+          chmod +x tools/apkmd
+
+          # Latest Morphe Desktop Dev
+          MORPHE_URL="$(
+            curl -fsSL \
+              "https://api.github.com/repos/MorpheApp/morphe-desktop/releases?per_page=100" |
+            jq -r '
+              [
+                .[]
+                | select(.prerelease == true)
+                | {
+                    date: .published_at,
+                    url: (
+                      .assets[]
+                      | select(.name | endswith("-all.jar"))
+                      | .browser_download_url
+                    )
+                  }
+              ]
+              | map(select(.url != null))
+              | sort_by(.date)
+              | last
+              | .url
+            '
+          )"
+
+          test -n "$MORPHE_URL"
+
+          curl -fL "$MORPHE_URL" \
+            -o tools/morphe.jar
+
+          # Latest official microG GmsCore
+          MICROG_URL="$(
+            curl -fsSL \
+              "https://api.github.com/repos/microg/GmsCore/releases/latest" |
+            jq -r '
+              .assets[]
+              | select(.name | startswith("com.google.android.gms-"))
+              | select(.name | endswith(".apk"))
+              | select(.name | endswith("-hw.apk") | not)
+              | .browser_download_url
+            ' |
+            head -n 1
+          )"
+
+          test -n "$MICROG_URL"
+
+          curl -fL "$MICROG_URL" \
+            -o microG-GmsCore.apk
+
+          echo "Tools downloaded."
+          ls -lh tools/*
+          ls -lh microG-GmsCore.apk
+
+      # ==============================
+      # 3. Detect supported versions
+      # ==============================
+
+      - name: Detect versions
+        shell: bash
+        run: |
+          set -e
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/MorpheApp/morphe-patches/main/patches-list.json" \
+            -o patches.json
+
+          # YouTube experimental
+          jq -r '
+            [
+              .patches[]
+              | .compatiblePackages[]?
+              | select(.packageName == "com.google.android.youtube")
+              | .targets[]?
+              | select(.isExperimental == true)
+              | .version
+            ]
+            | unique
+            | .[]
+          ' patches.json |
+          sort -V -r > yt-experimental.txt
+
+          # Latest YouTube stable
+          jq -r '
+            [
+              .patches[]
+              | .compatiblePackages[]?
+              | select(.packageName == "com.google.android.youtube")
+              | .targets[]?
+              | select(.isExperimental == false)
+              | .version
+            ]
+            | unique
+            | .[]
+          ' patches.json |
+          sort -V -r |
+          head -n 1 > yt-stable.txt
+
+          # Latest Reddit stable/recommended
+          jq -r '
+            [
+              .patches[]
+              | .compatiblePackages[]?
+              | select(.packageName == "com.reddit.frontpage")
+              | .targets[]?
+              | select(.isExperimental == false)
+              | .version
+            ]
+            | unique
+            | .[]
+          ' patches.json |
+          sort -V -r |
+          head -n 1 > reddit.txt
+
+          echo "YouTube experimental:"
+          cat yt-experimental.txt
+
+          echo ""
+          echo "YouTube stable:"
+          cat yt-stable.txt
+
+          echo ""
+          echo "Reddit recommended:"
+          cat reddit.txt
+
+          test -s yt-experimental.txt
+          test -s yt-stable.txt
+          test -s reddit.txt
+
+      # ==============================
+      # 4. Build + patch
+      # ==============================
+
+      - name: Build APKs
+        shell: bash
+        run: |
+          set -e
+
+          PATCH_VERSION="$(
+            curl -fsSL \
+              "https://api.github.com/repos/MorpheApp/morphe-patches/releases?per_page=100" |
+            jq -r '
+              [
+                .[]
+                | select(.prerelease == true)
+              ]
+              | sort_by(.published_at)
+              | last
+              | .tag_name
+            '
+          )"
+
+          PATCH_VERSION="${PATCH_VERSION#v}"
+
+          echo "Morphe: $PATCH_VERSION"
+
+          build_app() {
+            APP="$1"
+            VERSION="$2"
+            ORG="$3"
+            REPO="$4"
+
+            echo ""
+            echo "================================"
+            echo "$APP $VERSION"
+            echo "================================"
+
+            rm -rf downloads
+            mkdir -p downloads
+
+            cat > apps.json <<EOF
+          {
+            "options": {
+              "arch": "arm64-v8a",
+              "fallbackArch": "universal",
+              "dpi": "nodpi",
+              "outDir": "downloads"
+            },
+            "apps": [
+              {
+                "org": "$ORG",
+                "repo": "$REPO",
+                "version": "$VERSION",
+                "arch": "arm64-v8a",
+                "fallbackArch": "universal",
+                "dpi": "nodpi",
+                "outFile": "$APP-$VERSION"
+              }
+            ]
+          }
+          EOF
+
+            ./tools/apkmd apps.json
+
+            INPUT="$(
+              find downloads \
+                -type f \
+                \( -name "*.apk" -o -name "*.apkm" \) |
+              head -n 1
+            )"
+
+            if [ -z "$INPUT" ]; then
+              echo "No APK found for $APP $VERSION"
+              return 1
+            fi
+
+            echo "Downloaded:"
+            ls -lh "$INPUT"
+
+            OUTPUT="output/${APP}-${VERSION}-Morphe-Beta-${PATCH_VERSION}.apk"
+
+            java -jar tools/morphe.jar \
+              patch \
+              -p "$MORPHE" \
+              --prerelease \
+              --striplibs arm64-v8a \
+              --bytecode-mode STRIP_SAFE \
+              -o "$OUTPUT" \
+              "$INPUT"
+
+            test -f "$OUTPUT"
+
+            # Final APK alignment
+            ZIPALIGN="$(
+              find "$ANDROID_HOME/build-tools" \
+                -name zipalign |
+              sort -V |
+              tail -n 1
+            )"
+
+            "$ZIPALIGN" \
+              -p \
+              -f \
+              4 \
+              "$OUTPUT" \
+              "${OUTPUT%.apk}-aligned.apk"
+
+            mv \
+              "${OUTPUT%.apk}-aligned.apk" \
+              "$OUTPUT"
+
+            "$ZIPALIGN" \
+              -c \
+              -v \
+              4 \
+              "$OUTPUT"
+
+            echo "SUCCESS:"
+            ls -lh "$OUTPUT"
+          }
+
+          # --------------------------------
+          # YouTube experimental versions
+          # --------------------------------
+
+          while read -r VERSION; do
+            build_app \
+              "YouTube" \
+              "$VERSION" \
+              "google-inc" \
+              "youtube"
+          done < yt-experimental.txt
+
+          # --------------------------------
+          # YouTube latest stable
+          # --------------------------------
+
+          build_app \
+            "YouTube" \
+            "$(cat yt-stable.txt)" \
+            "google-inc" \
+            "youtube"
+
+          # --------------------------------
+          # Reddit latest recommended
+          # --------------------------------
+
+          build_app \
+            "Reddit" \
+            "$(cat reddit.txt)" \
+            "redditinc" \
+            "reddit"
+
+          echo ""
+          echo "================================"
+          echo "ALL BUILDS"
+          echo "================================"
+
+          find output -type f -name "*.apk" -print
+
+          test -n "$(find output -type f -name "*.apk")"
+
+          echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
+
+      # ==============================
+      # 5. Upload artifacts
+      # ==============================
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Morphe-Beta-ARM64-${{ env.PATCH_VERSION }}
+          path: |
+            output/*.apk
+            microG-GmsCore.apk
+
+      # ==============================
+      # 6. One combined GitHub Release
+      # ==============================
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+
+          TAG="morphe-beta-${PATCH_VERSION}"
+
+          gh release create "$TAG" \
+            --title "Morphe Beta $PATCH_VERSION" \
+            --prerelease \
+            --notes \
+          "Morphe Beta ARM64 build
+
+          Morphe patches: $PATCH_VERSION
+
+          YouTube:
+          Experimental versions + latest stable supported version
+
+          Reddit:
+          Latest stable/recommended supported version
+
+          Architecture:
+          ARM64-v8a
+
+          microG:
+          Latest official GmsCore APK included."
+
+          gh release upload \
+            "$TAG" \
+            output/*.apk \
+            microG-GmsCore.apk \
+            --clobber
