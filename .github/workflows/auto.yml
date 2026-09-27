@@ -1,529 +1,487 @@
-name: Build YT + Reddit Experimental / Anddea
+name: Build YT + Reddit Experimental
 
 on:
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: "Select build"
-        required: true
-        type: choice
-        options:
-          - yt-experimental-morphe
-          - reddit-experimental-morphe
-          - yt-anddea-dev
-        default: yt-experimental-morphe
-
-      app_version:
-        description: "Version (leave empty for automatic compatible-version detection)"
-        required: false
-        type: string
-        default: ""
-
-      include_experimental:
-        description: "Include experimental app versions"
-        required: true
-        type: boolean
-        default: true
-
-      arm64_only:
-        description: "Keep ARM64-v8a only"
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: write
 
-env:
-  MORPHE_PATCHES: https://github.com/MorpheApp/morphe-patches
-  ANDDEA_PATCHES: https://github.com/anddea/revanced-patches/tree/dev
-  APKMD_REPO: tanishqmanuja/apkmirror-downloader
-
 jobs:
-  build:
-    name: Build selected APK
+
+  # ============================================================
+  # 1. YOUTUBE EXPERIMENTAL + MORPHE DEV
+  # ============================================================
+  yt-experimental-morphe:
+    name: YouTube Experimental - Morphe Dev
     runs-on: ubuntu-latest
+
+    env:
+      APP_NAME: YouTube
+      PACKAGE_NAME: com.google.android.youtube
+      APK_ORG: google-inc
+      APK_REPO: youtube
+      PATCH_REPO: https://github.com/MorpheApp/morphe-patches
+      BUILD_NAME: YT-Morphe-Dev-Experimental
 
     steps:
 
-      # ==========================================================
-      # CHECKOUT
-      # ==========================================================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ==========================================================
-      # JAVA 26
-      # ==========================================================
       - name: Setup Java 26
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "26"
+          java-version: '26'
 
       - name: Verify Java
-        shell: bash
-        run: |
-          set -euo pipefail
-          java -version
+        run: java -version
 
-      # ==========================================================
-      # DEPENDENCIES
-      # ==========================================================
-      - name: Install dependencies
-        shell: bash
+      - name: Install tools
         run: |
-          set -euo pipefail
-
           sudo apt-get update
-          sudo apt-get install -y \
-            curl \
-            jq \
-            unzip \
-            wget \
-            zip
+          sudo apt-get install -y curl jq unzip
 
-      # ==========================================================
-      # CONFIGURE BUILD
-      # ==========================================================
-      - name: Configure build
-        id: config
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TYPE="${{ inputs.build_type }}"
-
-          case "$TYPE" in
-
-            yt-experimental-morphe)
-              echo "app=youtube" >> "$GITHUB_OUTPUT"
-              echo "package=com.google.android.youtube" >> "$GITHUB_OUTPUT"
-              echo "org=google-inc" >> "$GITHUB_OUTPUT"
-              echo "repo=youtube" >> "$GITHUB_OUTPUT"
-              echo "patches=$MORPHE_PATCHES" >> "$GITHUB_OUTPUT"
-              echo "patch_name=Morphe-Dev" >> "$GITHUB_OUTPUT"
-              echo "dev=true" >> "$GITHUB_OUTPUT"
-              echo "experimental=true" >> "$GITHUB_OUTPUT"
-              ;;
-
-            reddit-experimental-morphe)
-              echo "app=reddit" >> "$GITHUB_OUTPUT"
-              echo "package=com.reddit.frontpage" >> "$GITHUB_OUTPUT"
-              echo "org=reddit-inc" >> "$GITHUB_OUTPUT"
-              echo "repo=reddit" >> "$GITHUB_OUTPUT"
-              echo "patches=$MORPHE_PATCHES" >> "$GITHUB_OUTPUT"
-              echo "patch_name=Morphe-Dev" >> "$GITHUB_OUTPUT"
-              echo "dev=true" >> "$GITHUB_OUTPUT"
-              echo "experimental=true" >> "$GITHUB_OUTPUT"
-              ;;
-
-            yt-anddea-dev)
-              echo "app=youtube" >> "$GITHUB_OUTPUT"
-              echo "package=com.google.android.youtube" >> "$GITHUB_OUTPUT"
-              echo "org=google-inc" >> "$GITHUB_OUTPUT"
-              echo "repo=youtube" >> "$GITHUB_OUTPUT"
-              echo "patches=$ANDDEA_PATCHES" >> "$GITHUB_OUTPUT"
-              echo "patch_name=Anddea-Dev" >> "$GITHUB_OUTPUT"
-              echo "dev=true" >> "$GITHUB_OUTPUT"
-              echo "experimental=false" >> "$GITHUB_OUTPUT"
-              ;;
-
-            *)
-              echo "::error::Invalid build type."
-              exit 1
-              ;;
-          esac
-
-      # ==========================================================
-      # DOWNLOAD LATEST MORPHE DESKTOP
-      # ==========================================================
-      - name: Download latest Morphe Desktop
+      # ----------------------------------------------------------
+      # Download latest Morphe Desktop
+      # ----------------------------------------------------------
+      - name: Download Morphe Desktop
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p tools
 
-          echo "Finding latest Morphe Desktop JAR..."
-
-          JAR_URL="$(
+          URL="$(
             curl -fsSL \
               https://api.github.com/repos/MorpheApp/morphe-desktop/releases |
             jq -r '
-              .[]
-              | select(.draft == false)
-              | .assets[]
-              | select(.name | test("morphe-desktop-.*-all\\.jar$"))
-              | .browser_download_url
-            ' |
-            head -n 1
+              [
+                .[]
+                | select(.draft == false)
+                | .assets[]
+                | select(.name | test("morphe-desktop-.*-all\\.jar$"))
+              ][0].browser_download_url
+            '
           )"
 
-          if [ -z "$JAR_URL" ] || [ "$JAR_URL" = "null" ]; then
-            echo "::error::Morphe Desktop JAR was not found."
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::Morphe Desktop JAR not found."
             exit 1
           fi
 
-          echo "Downloading Morphe..."
-          echo "$JAR_URL"
-
-          curl -fL \
-            --retry 5 \
-            --retry-delay 5 \
-            "$JAR_URL" \
+          curl -fL --retry 5 --retry-delay 5 \
+            "$URL" \
             -o tools/morphe-desktop.jar
 
           test -s tools/morphe-desktop.jar
 
           java -jar tools/morphe-desktop.jar --version
 
-      # ==========================================================
-      # DOWNLOAD APKMIRROR DOWNLOADER
-      # ==========================================================
-      - name: Download APKMirror Downloader
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p tools
-
-          echo "Finding APKMirror Downloader..."
-
-          URL="$(
-            curl -fsSL \
-              "https://api.github.com/repos/${APKMD_REPO}/releases/latest" |
-            jq -r '
-              .assets[]
-              | select(
-                  (.name | ascii_downcase | contains("linux"))
-                  and
-                  (.name | ascii_downcase | contains("x64"))
-                )
-              | .browser_download_url
-            ' |
-            head -n 1
-          )"
-
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            URL="$(
-              curl -fsSL \
-                "https://api.github.com/repos/${APKMD_REPO}/releases/latest" |
-              jq -r '
-                .assets[]
-                | .browser_download_url
-              ' |
-              head -n 1
-            )"
-          fi
-
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "::error::APKMirror Downloader release not found."
-            exit 1
-          fi
-
-          echo "Downloading APKMirror Downloader..."
-
-          curl -fL \
-            --retry 5 \
-            --retry-delay 5 \
-            "$URL" \
-            -o tools/apkmd
-
-          chmod +x tools/apkmd
-
-          ./tools/apkmd --help
-
-      # ==========================================================
-      # DETECT COMPATIBLE VERSION
-      # ==========================================================
+      # ----------------------------------------------------------
+      # Detect latest compatible experimental version
+      # ----------------------------------------------------------
       - name: Detect compatible version
         id: version
         shell: bash
         run: |
           set -euo pipefail
 
-          PACKAGE="${{ steps.config.outputs.package }}"
-          PATCHES="${{ steps.config.outputs.patches }}"
-          MANUAL="${{ inputs.app_version }}"
+          java -jar tools/morphe-desktop.jar \
+            list-versions \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --filter-package-names "$PACKAGE_NAME" \
+            --include-experimental \
+            > versions.txt
 
-          if [ -n "$MANUAL" ]; then
-            echo "Manual version selected: $MANUAL"
-            echo "version=$MANUAL" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "Detecting compatible version..."
-          echo "Package: $PACKAGE"
-          echo "Patch source: $PATCHES"
-
-          CMD=(
-            java
-            -jar
-            tools/morphe-desktop.jar
-            list-versions
-            --patches
-            "$PATCHES"
-            --filter-package-names
-            "$PACKAGE"
-          )
-
-          if [ "${{ steps.config.outputs.dev }}" = "true" ]; then
-            CMD+=(--prerelease)
-          fi
-
-          if [ "${{ inputs.include_experimental }}" = "true" ]; then
-            CMD+=(--include-experimental)
-          fi
-
-          echo "Running:"
-          printf '%q ' "${CMD[@]}"
-          echo
-
-          VERSIONS="$("${CMD[@]}")"
-
-          echo "Available compatible versions:"
-          echo "$VERSIONS"
+          cat versions.txt
 
           VERSION="$(
-            echo "$VERSIONS" |
-            grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' |
+            grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' versions.txt |
             head -n 1
           )"
 
           if [ -z "$VERSION" ]; then
-            echo "::error::No compatible version found."
+            echo "::error::No compatible YouTube experimental version found."
             exit 1
           fi
 
-          echo "Selected version: $VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      # ==========================================================
-      # CREATE APKMIRROR CONFIG
-      # ==========================================================
-      - name: Create APKMirror configuration
+          echo "Selected YouTube version: $VERSION"
+
+      # ----------------------------------------------------------
+      # Download YouTube ARM64 APK
+      # ----------------------------------------------------------
+      - name: Download YouTube APK
+        id: apk
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        continue-on-error: true
+        with:
+          org: google-inc
+          repo: youtube
+          version: ${{ env.VERSION }}
+          bundle: false
+          filename: youtube-original.apk
+          overwrite: true
+
+      - name: Retry YouTube APK download
+        if: steps.apk.outcome != 'success'
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        with:
+          org: google-inc
+          repo: youtube
+          version: ${{ env.VERSION }}
+          bundle: false
+          filename: youtube-original.apk
+          overwrite: true
+
+      - name: Verify YouTube APK
         shell: bash
         run: |
           set -euo pipefail
 
-          VERSION="${{ steps.version.outputs.version }}"
+          test -s youtube-original.apk
+          unzip -t youtube-original.apk >/dev/null
 
-          mkdir -p downloads
-
-          cat > apps.json <<EOF
-          {
-            "options": {
-              "arch": "arm64-v8a",
-              "outDir": "downloads"
-            },
-            "apps": [
-              {
-                "org": "${{ steps.config.outputs.org }}",
-                "repo": "${{ steps.config.outputs.repo }}",
-                "version": "$VERSION",
-                "arch": "arm64-v8a",
-                "type": "apk",
-                "outFile": "original.apk",
-                "outDir": "downloads",
-                "overwrite": true
-              }
-            ]
-          }
-          EOF
-
-          cat apps.json
-
-      # ==========================================================
-      # DOWNLOAD ORIGINAL APK
-      # ==========================================================
-      - name: Download original APK
+      # ----------------------------------------------------------
+      # Patch
+      # ----------------------------------------------------------
+      - name: Patch YouTube
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf downloads
-          mkdir -p downloads
+          java -jar tools/morphe-desktop.jar \
+            patch \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --out "${BUILD_NAME}-${VERSION}.apk" \
+            youtube-original.apk
 
-          ./tools/apkmd apps.json
+          test -s "${BUILD_NAME}-${VERSION}.apk"
 
-          echo "Downloaded files:"
-          find downloads -type f -maxdepth 3 -print
-
-          APK="$(find downloads -type f -name '*.apk' | head -n 1)"
-
-          if [ -z "$APK" ]; then
-            echo "::error::No APK was downloaded."
-            exit 1
-          fi
-
-          cp "$APK" original.apk
-
-          test -s original.apk
-
-          echo "Original APK:"
-          ls -lh original.apk
-
-      # ==========================================================
-      # VERIFY ORIGINAL APK
-      # ==========================================================
-      - name: Verify original APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          unzip -t original.apk >/dev/null
-
-          if ! unzip -l original.apk |
-            grep -q "AndroidManifest.xml"; then
-            echo "::error::Downloaded file is not a valid APK."
-            exit 1
-          fi
-
-          echo "Original APK verification passed."
-
-      # ==========================================================
-      # PATCH APK
-      # ==========================================================
-      - name: Patch APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PATCHES="${{ steps.config.outputs.patches }}"
-          TYPE="${{ inputs.build_type }}"
-          VERSION="${{ steps.version.outputs.version }}"
-
-          OUTPUT="patched-${TYPE}-${VERSION}.apk"
-
-          CMD=(
-            java
-            -jar
-            tools/morphe-desktop.jar
-            patch
-            --patches
-            "$PATCHES"
-            --out
-            "$OUTPUT"
-            --bytecode-mode
-            STRIP_SAFE
-          )
-
-          # Dev patch release
-          if [ "${{ steps.config.outputs.dev }}" = "true" ]; then
-            CMD+=(--prerelease)
-          fi
-
-          # ARM64 only
-          if [ "${{ inputs.arm64_only }}" = "true" ]; then
-            CMD+=(--striplibs arm64-v8a)
-          fi
-
-          CMD+=(original.apk)
-
-          echo "Patch configuration:"
-          echo "Type: $TYPE"
-          echo "Version: $VERSION"
-          echo "Patch source: $PATCHES"
-
-          echo "Running Morphe..."
-
-          "${CMD[@]}"
-
-          if [ ! -s "$OUTPUT" ]; then
-            echo "::error::Morphe did not produce an APK."
-            exit 1
-          fi
-
-          echo "OUTPUT_APK=$OUTPUT" >> "$GITHUB_ENV"
-
-          ls -lh "$OUTPUT"
-
-      # ==========================================================
-      # VERIFY PATCHED APK
-      # ==========================================================
-      - name: Verify patched APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -s "$OUTPUT_APK"
-
-          unzip -t "$OUTPUT_APK" >/dev/null
-
-          if ! unzip -l "$OUTPUT_APK" |
-            grep -q "AndroidManifest.xml"; then
-            echo "::error::Patched APK is invalid."
-            exit 1
-          fi
-
-          echo "Checking ARM64 library..."
-
-          if [ "${{ inputs.arm64_only }}" = "true" ]; then
-            if ! unzip -l "$OUTPUT_APK" |
-              grep -q "lib/arm64-v8a/"; then
-              echo "::warning::No ARM64 native library was found."
-            fi
-          fi
-
-          echo "Patched APK verification passed."
-
-      # ==========================================================
-      # FINAL APK NAME
-      # ==========================================================
-      - name: Rename final APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          VERSION="${{ steps.version.outputs.version }}"
-          TYPE="${{ inputs.build_type }}"
-
-          case "$TYPE" in
-
-            yt-experimental-morphe)
-              FINAL="YT-${VERSION}-Morphe-Dev-Experimental-ARM64.apk"
-              ;;
-
-            reddit-experimental-morphe)
-              FINAL="Reddit-${VERSION}-Morphe-Dev-Experimental-ARM64.apk"
-              ;;
-
-            yt-anddea-dev)
-              FINAL="YT-${VERSION}-Anddea-Dev-ARM64.apk"
-              ;;
-
-            *)
-              echo "::error::Unknown build type."
-              exit 1
-              ;;
-          esac
-
-          mv "$OUTPUT_APK" "$FINAL"
-
-          echo "FINAL_APK=$FINAL" >> "$GITHUB_ENV"
-
-          ls -lh "$FINAL"
-
-      # ==========================================================
-      # UPLOAD ARTIFACT
-      # ==========================================================
-      - name: Upload APK artifact
+      # ----------------------------------------------------------
+      # Upload artifact
+      # ----------------------------------------------------------
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ inputs.build_type }}-${{ steps.version.outputs.version }}"
-          path: "${{ env.FINAL_APK }}"
+          name: ${{ env.BUILD_NAME }}-${{ env.VERSION }}
+          path: ${{ env.BUILD_NAME }}-${{ env.VERSION }}.apk
           if-no-files-found: error
-          compression-level: 9
 
-      # ==========================================================
-      # CREATE PRERELEASE
-      # ==========================================================
-      - name: Create GitHub Pre-release
-        uses: softprops/action-gh-release@v2
+
+  # ============================================================
+  # 2. REDDIT EXPERIMENTAL + MORPHE DEV
+  # ============================================================
+  reddit-experimental-morphe:
+    name: Reddit Experimental - Morphe Dev
+    runs-on: ubuntu-latest
+
+    env:
+      APP_NAME: Reddit
+      PACKAGE_NAME: com.reddit.frontpage
+      PATCH_REPO: https://github.com/MorpheApp/morphe-patches
+      BUILD_NAME: Reddit-Morphe-Dev-Experimental
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 26
+        uses: actions/setup-java@v5
         with:
-          tag_name: "${{ inputs.build_type }}-${{ steps.version.outputs.version }}-${{ github.run_number }}"
-          name: "${{ inputs.build_type }} | ${{ steps.version.outputs.version }}"
-          prerelease: true
-          generate_release_notes: true
-          files: "${{ env.FINAL_APK }}"
+          distribution: temurin
+          java-version: '26'
+
+      - name: Verify Java
+        run: java -version
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq unzip
+
+      # ----------------------------------------------------------
+      # Morphe
+      # ----------------------------------------------------------
+      - name: Download Morphe Desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p tools
+
+          URL="$(
+            curl -fsSL \
+              https://api.github.com/repos/MorpheApp/morphe-desktop/releases |
+            jq -r '
+              [
+                .[]
+                | select(.draft == false)
+                | .assets[]
+                | select(.name | test("morphe-desktop-.*-all\\.jar$"))
+              ][0].browser_download_url
+            '
+          )"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::Morphe Desktop JAR not found."
+            exit 1
+          fi
+
+          curl -fL --retry 5 --retry-delay 5 \
+            "$URL" \
+            -o tools/morphe-desktop.jar
+
+          test -s tools/morphe-desktop.jar
+
+      # ----------------------------------------------------------
+      # Reddit version
+      # ----------------------------------------------------------
+      - name: Detect Reddit experimental version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -jar tools/morphe-desktop.jar \
+            list-versions \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --filter-package-names "$PACKAGE_NAME" \
+            --include-experimental \
+            > versions.txt
+
+          cat versions.txt
+
+          VERSION="$(
+            grep -Eo '[0-9]{4}\.[0-9]+\.[0-9]+' versions.txt |
+            head -n 1
+          )"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::No compatible Reddit experimental version found."
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          echo "Selected Reddit version: $VERSION"
+
+      # ----------------------------------------------------------
+      # Reddit APKM
+      # ----------------------------------------------------------
+      - name: Download Reddit bundle
+        id: apk
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        continue-on-error: true
+        with:
+          org: reddit-inc
+          repo: reddit
+          version: ${{ env.VERSION }}
+          bundle: true
+          filename: reddit-original.apkm
+          overwrite: true
+
+      - name: Retry Reddit download
+        if: steps.apk.outcome != 'success'
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        with:
+          org: reddit-inc
+          repo: reddit
+          version: ${{ env.VERSION }}
+          bundle: true
+          filename: reddit-original.apkm
+          overwrite: true
+
+      - name: Verify Reddit bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s reddit-original.apkm
+          unzip -t reddit-original.apkm >/dev/null
+
+      # ----------------------------------------------------------
+      # Patch Reddit
+      # ----------------------------------------------------------
+      - name: Patch Reddit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -jar tools/morphe-desktop.jar \
+            patch \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --out "${BUILD_NAME}-${VERSION}.apk" \
+            reddit-original.apkm
+
+          test -s "${BUILD_NAME}-${VERSION}.apk"
+
+      - name: Upload Reddit APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILD_NAME }}-${{ env.VERSION }}
+          path: ${{ env.BUILD_NAME }}-${{ env.VERSION }}.apk
+          if-no-files-found: error
+
+
+  # ============================================================
+  # 3. YOUTUBE + ANDDEA DEV
+  # ============================================================
+  yt-anddea-dev:
+    name: YouTube - Anddea Dev
+    runs-on: ubuntu-latest
+
+    env:
+      PACKAGE_NAME: com.google.android.youtube
+      PATCH_REPO: https://github.com/anddea/revanced-patches/tree/dev
+      BUILD_NAME: YT-Anddea-Dev
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 26
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '26'
+
+      - name: Verify Java
+        run: java -version
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq unzip
+
+      # ----------------------------------------------------------
+      # Morphe Desktop
+      # ----------------------------------------------------------
+      - name: Download Morphe Desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p tools
+
+          URL="$(
+            curl -fsSL \
+              https://api.github.com/repos/MorpheApp/morphe-desktop/releases |
+            jq -r '
+              [
+                .[]
+                | select(.draft == false)
+                | .assets[]
+                | select(.name | test("morphe-desktop-.*-all\\.jar$"))
+              ][0].browser_download_url
+            '
+          )"
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::Morphe Desktop JAR not found."
+            exit 1
+          fi
+
+          curl -fL --retry 5 --retry-delay 5 \
+            "$URL" \
+            -o tools/morphe-desktop.jar
+
+          test -s tools/morphe-desktop.jar
+
+      # ----------------------------------------------------------
+      # Anddea Dev compatible version
+      # ----------------------------------------------------------
+      - name: Detect Anddea compatible version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -jar tools/morphe-desktop.jar \
+            list-versions \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --filter-package-names "$PACKAGE_NAME" \
+            > versions.txt
+
+          cat versions.txt
+
+          VERSION="$(
+            grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' versions.txt |
+            head -n 1
+          )"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::No compatible YouTube version found for Anddea Dev."
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          echo "Selected YouTube version: $VERSION"
+
+      # ----------------------------------------------------------
+      # Download YouTube
+      # ----------------------------------------------------------
+      - name: Download YouTube APK
+        id: apk
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        continue-on-error: true
+        with:
+          org: google-inc
+          repo: youtube
+          version: ${{ env.VERSION }}
+          bundle: false
+          filename: youtube-original.apk
+          overwrite: true
+
+      - name: Retry YouTube APK download
+        if: steps.apk.outcome != 'success'
+        uses: Yakov5776/gh-apkmirror-dl@v1.3
+        with:
+          org: google-inc
+          repo: youtube
+          version: ${{ env.VERSION }}
+          bundle: false
+          filename: youtube-original.apk
+          overwrite: true
+
+      - name: Verify YouTube APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s youtube-original.apk
+          unzip -t youtube-original.apk >/dev/null
+
+      # ----------------------------------------------------------
+      # Anddea patch
+      # ----------------------------------------------------------
+      - name: Patch YouTube with Anddea Dev
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          java -jar tools/morphe-desktop.jar \
+            patch \
+            --patches "$PATCH_REPO" \
+            --prerelease \
+            --out "${BUILD_NAME}-${VERSION}.apk" \
+            youtube-original.apk
+
+          test -s "${BUILD_NAME}-${VERSION}.apk"
+
+      - name: Upload Anddea APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILD_NAME }}-${{ env.VERSION }}
+          path: ${{ env.BUILD_NAME }}-${{ env.VERSION }}.apk
+          if-no-files-found: error
