@@ -1,4 +1,4 @@
-# YT Morphe Stable
+# Morphe Stable+beta (YT and REDDIT)
 
 YT Morphe Stable is a stable, production-friendly starting point for the YT Morphe project. It is designed to provide a clean foundation for development, experimentation, and deployment while keeping the codebase organized, maintainable, and easy to extend.
 
