@@ -1,4 +1,4 @@
-name: Auto Morphe Beta → YouTube Experimental + Stable → ARM64 Release
+name: Auto Morphe Beta → YouTube + Reddit → ARM64 Release
 
 on:
   workflow_dispatch:
@@ -20,29 +20,30 @@ jobs:
       MORPHE_REPO: "MorpheApp/morphe-desktop"
       PATCHES_REPO: "https://github.com/MorpheApp/morphe-patches"
       PATCHES_JSON: "https://raw.githubusercontent.com/MorpheApp/morphe-patches/main/patches-list.json"
+      MICROG_REPO: "microg/GmsCore"
 
     steps:
 
-      # -------------------------------------------------------
-      # Checkout
-      # -------------------------------------------------------
+      # =====================================================
+      # CHECKOUT
+      # =====================================================
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # -------------------------------------------------------
-      # Detect latest Morphe Beta / Dev patch
-      # -------------------------------------------------------
-      - name: Detect latest Morphe Beta patch
+      # =====================================================
+      # DETECT LATEST MORPHE DEV PATCH
+      # =====================================================
+
+      - name: Detect latest Morphe Dev patch
         id: patch_check
         shell: bash
         run: |
           set -e
 
-          echo "========================================="
-          echo "Checking latest Morphe prerelease..."
-          echo "========================================="
+          echo "Checking latest Morphe Dev patch..."
 
           PATCH_VERSION="$(
             curl -fsSL \
@@ -60,15 +61,13 @@ jobs:
           )"
 
           if [ -z "$PATCH_VERSION" ] || [ "$PATCH_VERSION" = "null" ]; then
-            echo "ERROR: Could not detect Morphe prerelease."
+            echo "ERROR: Morphe Dev patch not found."
             exit 1
           fi
 
           PATCH_VERSION="${PATCH_VERSION#v}"
 
-          echo "Latest Morphe Beta/Dev patch:"
-          echo "$PATCH_VERSION"
-
+          echo "Latest Morphe Dev patch: $PATCH_VERSION"
           echo "PATCH_VERSION=$PATCH_VERSION" >> "$GITHUB_ENV"
 
           if [ -f ".morphe-patch-version" ]; then
@@ -77,47 +76,42 @@ jobs:
             CURRENT_PATCH=""
           fi
 
-          echo "Recorded patch:"
-          echo "${CURRENT_PATCH:-none}"
+          echo "Recorded patch: ${CURRENT_PATCH:-none}"
 
-          # Manual run always builds
+          # Manual run = always build
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual run detected."
-            echo "Forcing build."
-
+            echo "Manual run - forcing build."
             echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Scheduled run
           if [ "$PATCH_VERSION" = "$CURRENT_PATCH" ]; then
-            echo ""
             echo "No new Morphe patch."
-            echo "Skipping build."
-
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo ""
-          echo "NEW MORPHE PATCH DETECTED!"
+          echo "New Morphe patch detected."
           echo "Old: ${CURRENT_PATCH:-none}"
           echo "New: $PATCH_VERSION"
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      # -------------------------------------------------------
-      # Stop if no new patch
-      # -------------------------------------------------------
+      # =====================================================
+      # STOP WHEN NOTHING CHANGED
+      # =====================================================
+
       - name: Stop if no new patch
         if: steps.patch_check.outputs.changed != 'true'
         run: |
           echo "No new Morphe patch."
-          echo "Nothing to build."
+          echo "Skipping build."
 
-      # -------------------------------------------------------
-      # Setup Java 21
-      # -------------------------------------------------------
+      # =====================================================
+      # JAVA 21
+      # =====================================================
+
       - name: Setup Java 21
         if: steps.patch_check.outputs.changed == 'true'
         uses: actions/setup-java@v5
@@ -125,16 +119,17 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # -------------------------------------------------------
-      # Download APKMirror downloader
-      # -------------------------------------------------------
+      # =====================================================
+      # DOWNLOAD APKMIRROR DOWNLOADER
+      # =====================================================
+
       - name: Download APKMirror downloader
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         run: |
           set -e
 
-          mkdir -p tools downloads
+          mkdir -p tools downloads output results
 
           API="https://api.github.com/repos/${APKMD_REPO}/releases/latest"
 
@@ -149,30 +144,21 @@ jobs:
           )"
 
           if [ -z "$APKMD_URL" ] || [ "$APKMD_URL" = "null" ]; then
-            echo "ERROR: APKMD binary not found."
-
-            curl -fsSL "$API" |
-              jq -r '.assets[].name'
-
+            echo "ERROR: APKMD not found."
             exit 1
           fi
 
-          echo "Downloading APKMD..."
-          echo "$APKMD_URL"
-
-          curl -fL "$APKMD_URL" \
-            -o tools/apkmd
+          curl -fL "$APKMD_URL" -o tools/apkmd
 
           chmod +x tools/apkmd
 
-          echo ""
-          echo "APKMD ready:"
           ./tools/apkmd --help
 
-      # -------------------------------------------------------
-      # Download latest Morphe Desktop prerelease
-      # -------------------------------------------------------
-      - name: Download Morphe Desktop Beta
+      # =====================================================
+      # DOWNLOAD MORPHE DESKTOP DEV
+      # =====================================================
+
+      - name: Download Morphe Desktop Dev
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         run: |
@@ -200,32 +186,89 @@ jobs:
           )"
 
           if [ -z "$MORPHE_URL" ] || [ "$MORPHE_URL" = "null" ]; then
-            echo "ERROR: Morphe Desktop prerelease JAR not found."
-
-            curl -fsSL "$API" |
-              jq -r '
-                .[]
-                | select(.prerelease == true)
-                | .tag_name
-              ' |
-              head -n 10
-
+            echo "ERROR: Morphe Desktop Dev JAR not found."
             exit 1
           fi
-
-          echo "Downloading Morphe Desktop Beta:"
-          echo "$MORPHE_URL"
 
           curl -fL "$MORPHE_URL" \
             -o tools/morphe-desktop.jar
 
-          echo ""
           echo "Morphe Desktop:"
           ls -lh tools/morphe-desktop.jar
 
-      # -------------------------------------------------------
-      # Detect YouTube versions from official Morphe metadata
-      # -------------------------------------------------------
+      # =====================================================
+      # DOWNLOAD LATEST OFFICIAL MICROG GMSCORE
+      # =====================================================
+
+      - name: Download latest official microG GmsCore
+        if: steps.patch_check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p microg
+
+          API="https://api.github.com/repos/${MICROG_REPO}/releases/latest"
+
+          echo "Getting latest official microG GmsCore..."
+
+          MICROG_URL="$(
+            curl -fsSL "$API" |
+            jq -r '
+              .assets[]
+              | select(
+                  .name
+                  | test("^com\\.google\\.android\\.gms-[0-9]+\\.apk$")
+                )
+              | .browser_download_url
+            ' |
+            head -n 1
+          )"
+
+          if [ -z "$MICROG_URL" ] || [ "$MICROG_URL" = "null" ]; then
+            echo "ERROR: Official microG GmsCore APK not found."
+            exit 1
+          fi
+
+          echo "microG URL:"
+          echo "$MICROG_URL"
+
+          curl -fL "$MICROG_URL" \
+            -o microg/microG-GmsCore.apk
+
+          echo ""
+          echo "microG GmsCore:"
+          ls -lh microg/microG-GmsCore.apk
+
+          echo ""
+          echo "microG version:"
+          curl -fsSL "$API" |
+            jq -r '.tag_name'
+
+          echo "MICROG_VERSION=$(
+            curl -fsSL "$API" |
+            jq -r '.tag_name'
+          )" >> "$GITHUB_ENV"
+
+      # =====================================================
+      # DOWNLOAD MORPHE PATCH METADATA
+      # =====================================================
+
+      - name: Download Morphe patch metadata
+        if: steps.patch_check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+
+          curl -fsSL "$PATCHES_JSON" \
+            -o patches-list.json
+
+          echo "Morphe patch metadata downloaded."
+
+      # =====================================================
+      # DETECT YOUTUBE VERSIONS
+      # =====================================================
+
       - name: Detect YouTube versions
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
@@ -233,14 +276,8 @@ jobs:
           set -e
 
           echo "========================================="
-          echo "Detecting YouTube versions"
+          echo "YouTube versions"
           echo "========================================="
-
-          curl -fsSL "$PATCHES_JSON" \
-            -o patches-list.json
-
-          echo ""
-          echo "Experimental YouTube versions:"
 
           jq -r '
             [
@@ -256,10 +293,7 @@ jobs:
             | sort_by(split(".") | map(tonumber))
             | reverse
             | .[]
-          ' patches-list.json | tee experimental-versions.txt
-
-          echo ""
-          echo "Stable YouTube versions:"
+          ' patches-list.json > youtube-experimental.txt
 
           jq -r '
             [
@@ -275,117 +309,191 @@ jobs:
             | sort_by(split(".") | map(tonumber))
             | reverse
             | .[]
-          ' patches-list.json | tee stable-versions-all.txt
-
-          # Latest stable target only
-          head -n 1 stable-versions-all.txt > stable-version.txt
-
-          echo ""
-          echo "========================================="
-          echo "Selected versions"
-          echo "========================================="
+          ' patches-list.json > youtube-stable.txt
 
           echo "Experimental:"
-          cat experimental-versions.txt || true
+          cat youtube-experimental.txt
 
           echo ""
-          echo "Latest stable:"
-          cat stable-version.txt || true
+          echo "Stable:"
+          cat youtube-stable.txt
 
-          EXP_COUNT="$(grep -c . experimental-versions.txt || true)"
-
-          if [ "$EXP_COUNT" -eq 0 ]; then
-            echo "ERROR: No experimental YouTube versions found."
+          if [ ! -s youtube-experimental.txt ]; then
+            echo "ERROR: No YouTube experimental version found."
             exit 1
           fi
 
-          if [ ! -s stable-version.txt ]; then
-            echo "ERROR: No stable YouTube version found."
+          if [ ! -s youtube-stable.txt ]; then
+            echo "ERROR: No YouTube stable version found."
             exit 1
           fi
 
-      # -------------------------------------------------------
-      # Show build matrix
-      # -------------------------------------------------------
-      - name: Show Build Matrix
+      # =====================================================
+      # DETECT REDDIT VERSIONS
+      # =====================================================
+
+      - name: Detect Reddit versions
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         run: |
           set -e
 
           echo "========================================="
-          echo "MORPHE BUILD MATRIX"
+          echo "Reddit versions"
           echo "========================================="
 
-          echo ""
-          echo "Morphe Patch:"
-          echo "$PATCH_VERSION"
+          jq -r '
+            [
+              .patches[]
+              | .compatiblePackages[]?
+              | select(.packageName == "com.reddit.frontpage")
+              | .targets[]?
+              | select(.isExperimental == true)
+              | .version
+              | select(type == "string")
+            ]
+            | unique
+            | .[]
+          ' patches-list.json |
+          sort -V -r > reddit-experimental.txt
+
+          jq -r '
+            [
+              .patches[]
+              | .compatiblePackages[]?
+              | select(.packageName == "com.reddit.frontpage")
+              | .targets[]?
+              | select(.isExperimental == false)
+              | .version
+              | select(type == "string")
+            ]
+            | unique
+            | .[]
+          ' patches-list.json |
+          sort -V -r > reddit-stable.txt
+
+          echo "Experimental:"
+          cat reddit-experimental.txt
 
           echo ""
-          echo "Experimental YouTube versions:"
-          cat experimental-versions.txt
+          echo "Stable:"
+          cat reddit-stable.txt
 
-          echo ""
-          echo "Stable YouTube version:"
-          cat stable-version.txt
+          if [ ! -s reddit-experimental.txt ]; then
+            echo "ERROR: No Reddit experimental version found."
+            exit 1
+          fi
 
-          echo ""
-          echo "Architecture:"
-          echo "ARM64-v8a"
+          if [ ! -s reddit-stable.txt ]; then
+            echo "ERROR: No Reddit stable version found."
+            exit 1
+          fi
 
-      # -------------------------------------------------------
-      # Build all selected versions
-      # -------------------------------------------------------
-      - name: Download and patch YouTube versions
+      # =====================================================
+      # CREATE BUILD LIST
+      #
+      # YouTube:
+      #   All experimental + latest stable
+      #
+      # Reddit:
+      #   Latest experimental + latest stable
+      # =====================================================
+
+      - name: Create build list
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         run: |
           set -e
 
-          mkdir -p downloads output results
+          : > build-list.txt
 
-          # ---------------------------------------------
-          # Create version list
-          # ---------------------------------------------
+          # -----------------------------
+          # YouTube experimental
+          # -----------------------------
 
-          cat experimental-versions.txt > build-versions.txt
+          while IFS= read -r VERSION; do
+            [ -z "$VERSION" ] && continue
+            echo "youtube|$VERSION|experimental" >> build-list.txt
+          done < youtube-experimental.txt
 
-          STABLE_VERSION="$(cat stable-version.txt)"
+          # Latest YouTube stable
+          YT_STABLE="$(head -n 1 youtube-stable.txt)"
 
-          # Add stable version if it isn't already experimental
-          if ! grep -Fxq "$STABLE_VERSION" build-versions.txt; then
-            echo "$STABLE_VERSION" >> build-versions.txt
-          fi
+          echo "youtube|$YT_STABLE|stable" >> build-list.txt
+
+          # -----------------------------
+          # Reddit latest experimental
+          # -----------------------------
+
+          REDDIT_EXPERIMENTAL="$(head -n 1 reddit-experimental.txt)"
+
+          echo "reddit|$REDDIT_EXPERIMENTAL|experimental" >> build-list.txt
+
+          # Latest Reddit stable / recommended
+          REDDIT_STABLE="$(head -n 1 reddit-stable.txt)"
+
+          echo "reddit|$REDDIT_STABLE|stable" >> build-list.txt
+
+          # Remove duplicate app/version combinations
+          sort -u build-list.txt -o build-list.txt
 
           echo "========================================="
-          echo "Versions to build"
+          echo "FINAL BUILD LIST"
           echo "========================================="
 
-          cat build-versions.txt
+          cat build-list.txt
 
-          # ---------------------------------------------
-          # Build each version
-          # ---------------------------------------------
+      # =====================================================
+      # BUILD
+      # =====================================================
 
-          while IFS= read -r YT_VERSION; do
+      - name: Download and patch applications
+        if: steps.patch_check.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
 
-            [ -z "$YT_VERSION" ] && continue
+          mkdir -p output results
+
+          while IFS='|' read -r APP VERSION CHANNEL; do
 
             echo ""
             echo "========================================="
-            echo "BUILDING YOUTUBE $YT_VERSION"
-            echo "MORPHE PATCH $PATCH_VERSION"
+            echo "Building: $APP"
+            echo "Version : $VERSION"
+            echo "Channel : $CHANNEL"
+            echo "Morphe  : $PATCH_VERSION"
             echo "========================================="
 
             rm -rf downloads/*
-            rm -f youtube-original.apk
-            rm -f youtube-patched.apk
-            rm -f youtube-aligned.apk
+            rm -f input.apk
+            rm -f patched.apk
             rm -f result.json
 
-            # -----------------------------------------
+            # ------------------------------------------------
+            # APKMirror identifiers
+            # ------------------------------------------------
+
+            if [ "$APP" = "youtube" ]; then
+              ORG="google-inc"
+              REPO="youtube"
+              PACKAGE="com.google.android.youtube"
+              APP_NAME="YouTube"
+
+            elif [ "$APP" = "reddit" ]; then
+              ORG="reddit-inc"
+              REPO="reddit"
+              PACKAGE="com.reddit.frontpage"
+              APP_NAME="Reddit"
+
+            else
+              echo "Unknown app: $APP"
+              continue
+            fi
+
+            # ------------------------------------------------
             # APKMirror configuration
-            # -----------------------------------------
+            # ------------------------------------------------
 
             cat > apps.json <<EOF
           {
@@ -397,77 +505,76 @@ jobs:
             },
             "apps": [
               {
-                "org": "google-inc",
-                "repo": "youtube",
-                "version": "${YT_VERSION}",
+                "org": "${ORG}",
+                "repo": "${REPO}",
+                "version": "${VERSION}",
                 "arch": "arm64-v8a",
                 "fallbackArch": "universal",
                 "dpi": "nodpi",
-                "outFile": "youtube-${YT_VERSION}"
+                "outFile": "${APP}-${VERSION}"
               }
             ]
           }
           EOF
 
-            echo "Downloading YouTube $YT_VERSION..."
+            echo "Downloading ${APP_NAME} ${VERSION}..."
 
             if ! ./tools/apkmd apps.json; then
-              echo "WARNING: APKMirror download failed for $YT_VERSION"
-              echo "Skipping this version."
+              echo "WARNING: APKMirror download failed."
+              echo "Skipping ${APP_NAME} ${VERSION}."
               continue
             fi
 
             APK="$(
               find downloads \
                 -type f \
-                -name "*.apk" |
+                \( -name "*.apk" -o -name "*.apkm" \) |
               head -n 1
             )"
 
             if [ -z "$APK" ]; then
-              echo "WARNING: No APK found for $YT_VERSION"
-              echo "Skipping this version."
+              echo "WARNING: APK/APKM not found."
               continue
             fi
 
-            cp "$APK" youtube-original.apk
+            cp "$APK" input.apk
 
             echo ""
-            echo "Original APK:"
-            ls -lh youtube-original.apk
+            echo "Downloaded:"
+            ls -lh input.apk
 
-            # -----------------------------------------
-            # Patch with Morphe Beta/Dev patches
-            # -----------------------------------------
+            # ------------------------------------------------
+            # Patch with Morphe Beta
+            # ------------------------------------------------
 
-            FINAL_NAME="YT-${YT_VERSION}-Morphe-Beta-${PATCH_VERSION}.apk"
+            FINAL_NAME="${APP}-${VERSION}-Morphe-Beta-${PATCH_VERSION}.apk"
 
             echo ""
-            echo "Patching $YT_VERSION..."
+            echo "Patching with Morphe Beta..."
 
             if ! java -jar tools/morphe-desktop.jar \
               patch \
               -p "$PATCHES_REPO" \
               --prerelease \
-              -o "youtube-patched.apk" \
-              -r "result-${YT_VERSION}.json" \
+              -o patched.apk \
+              -r result.json \
               --striplibs "arm64-v8a" \
               --bytecode-mode "STRIP_SAFE" \
-              youtube-original.apk
+              input.apk
             then
-              echo "WARNING: Morphe patch failed for $YT_VERSION"
-              echo "Skipping this version."
+              echo "WARNING: Morphe patch failed."
+              echo "Skipping ${APP_NAME} ${VERSION}."
               continue
             fi
 
-            if [ ! -f "youtube-patched.apk" ]; then
-              echo "WARNING: Patched APK not created."
+            if [ ! -f patched.apk ]; then
+              echo "WARNING: patched.apk was not created."
               continue
             fi
 
-            # -----------------------------------------
+            # ------------------------------------------------
             # Zipalign FINAL patched APK
-            # -----------------------------------------
+            # ------------------------------------------------
 
             ZIPALIGN="$(
               find "$ANDROID_HOME/build-tools" \
@@ -489,11 +596,8 @@ jobs:
               -p \
               -f \
               4 \
-              youtube-patched.apk \
+              patched.apk \
               "output/${FINAL_NAME}"
-
-            echo ""
-            echo "Checking alignment..."
 
             "$ZIPALIGN" \
               -c \
@@ -501,25 +605,25 @@ jobs:
               4 \
               "output/${FINAL_NAME}"
 
-            # -----------------------------------------
-            # Copy result
-            # -----------------------------------------
+            # ------------------------------------------------
+            # Save result JSON
+            # ------------------------------------------------
 
-            if [ -f "result-${YT_VERSION}.json" ]; then
-              cp \
-                "result-${YT_VERSION}.json" \
-                "results/result-${YT_VERSION}.json"
+            if [ -f result.json ]; then
+              cp result.json \
+                "results/${APP}-${VERSION}-result.json"
             fi
 
             echo ""
             echo "SUCCESS:"
             ls -lh "output/${FINAL_NAME}"
 
-          done < build-versions.txt
+          done < build-list.txt
 
-      # -------------------------------------------------------
-      # Verify generated APKs
-      # -------------------------------------------------------
+      # =====================================================
+      # VERIFY APKs
+      # =====================================================
+
       - name: Verify generated APKs
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
@@ -546,24 +650,22 @@ jobs:
           echo "APK count: $COUNT"
 
           if [ "$COUNT" -eq 0 ]; then
-            echo "ERROR: No APK was successfully generated."
+            echo "ERROR: No APK was generated."
             exit 1
           fi
 
-      # -------------------------------------------------------
-      # Upload all APK artifacts
-      # -------------------------------------------------------
-      - name: Upload APK artifacts
+      # =====================================================
+      # UPLOAD ARTIFACTS
+      # =====================================================
+
+      - name: Upload all APKs
         if: steps.patch_check.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Morphe-Beta-YouTube-ARM64-${{ env.PATCH_VERSION }}
+          name: Morphe-Beta-ARM64-${{ env.PATCH_VERSION }}
           path: output/*.apk
           if-no-files-found: error
 
-      # -------------------------------------------------------
-      # Upload patch results
-      # -------------------------------------------------------
       - name: Upload patch results
         if: steps.patch_check.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
@@ -572,14 +674,15 @@ jobs:
           path: results/*.json
           if-no-files-found: warn
 
-      # -------------------------------------------------------
-      # Create individual GitHub Releases
-      # -------------------------------------------------------
-      - name: Create GitHub Releases
+      # =====================================================
+      # CREATE INDIVIDUAL RELEASES
+      # =====================================================
+
+      - name: Create GitHub releases
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
 
@@ -588,52 +691,50 @@ jobs:
             [ -f "$APK" ] || continue
 
             FILE="$(basename "$APK")"
-
-            # Remove .apk
             BASE="${FILE%.apk}"
-
-            # Release tag
-            TAG="${BASE}"
 
             echo ""
             echo "========================================="
             echo "Creating release"
-            echo "$TAG"
+            echo "$BASE"
             echo "========================================="
 
             gh release create \
-              "$TAG" \
+              "$BASE" \
               "$APK" \
+              "microg/microG-GmsCore.apk" \
               --title "$BASE" \
               --prerelease \
               --notes \
-          "YouTube ARM64-v8a
+          "Morphe Beta ARM64 build
 
-          Patched with Morphe Beta/Dev patches.
+          App:
+          ${BASE}
 
-          Morphe Patches:
+          Morphe Dev Patches:
           ${PATCH_VERSION}
 
           Architecture:
           ARM64-v8a
 
-          YouTube version:
-          ${BASE#YT-}
-
-          Source:
+          APK source:
           APKMirror
 
-          Build:
-          Automatic daily Morphe Beta build
+          Official microG GmsCore:
+          ${MICROG_VERSION}
 
-          Experimental versions are selected automatically from Morphe's official patch compatibility metadata."
+          microG GmsCore is included as a separate release asset.
+
+          Build:
+          Automatic Morphe Beta build."
 
           done
 
-      # -------------------------------------------------------
-      # Save Morphe patch version
-      # -------------------------------------------------------
-      - name: Save Morphe Patch Version
+      # =====================================================
+      # SAVE PATCH VERSION
+      # =====================================================
+
+      - name: Save Morphe patch version
         if: steps.patch_check.outputs.changed == 'true'
         shell: bash
         run: |
@@ -647,7 +748,7 @@ jobs:
           git add .morphe-patch-version
 
           if git diff --cached --quiet; then
-            echo "Morphe patch version already saved."
+            echo "Patch version already saved."
             exit 0
           fi
 
